@@ -1,0 +1,432 @@
+
+service: celosia
+# app: 0069-celosia-sls
+# org: subhamayaws
+
+frameworkVersion: "^3.25.1"
+
+params:
+  devl: 
+      kms-key-alias: alias/SB-KMS
+      kms-key-id: arn:aws:kms:us-east-1:807724355529:key/e4c733c5-9fbe-4a90-bda1-6f0362bc9b89
+      sns-subscription-email: subhamay.aws@mailinator.com
+      delay-seconds: 0
+      maximum-message-size: 262144
+      message-retention-period: 60
+      receive-message-waittime-seconds:  0
+      message-visibility-timeout: 0
+      lambda-invocations-alarm-name: ${self:service}-invocations-alarm-${self:provider.stage}-${self:provider.region}
+      lambda-errors-alarm-name: ${self:service}-errors-alarm-${self:provider.stage}-${self:provider.region}
+      lambda-throttles-alarm-name: ${self:service}-throttles-alarm-${self:provider.stage}-${self:provider.region}
+      lambda-duration-alarm-name: ${self:service}-duration-alarm-${self:provider.stage}-${self:provider.region}
+      lambda-conc-execution-alarm-name: ${self:service}-concurrent-executions-alarm-${self:provider.stage}-${self:provider.region}
+      comparison-operator-invocations-alarm: GreaterThanOrEqualToThreshold
+      comparison-operator-errors-alarm: GreaterThanOrEqualToThreshold
+      comparison-operator-throttles-alarm: GreaterThanOrEqualToThreshold
+      comparison-operator-duration-alarm: GreaterThanOrEqualToThreshold
+      comparison-operator-conc-execution-alarm: GreaterThanOrEqualToThreshold
+      threshold-lambda-invocations-alarm: 2
+      threshold-lambda-errors-alarm: 2
+      threshold-lambda-throttles-alarm: 2
+      threshold-lambda-duration-alarm: 2
+      threshold-lambda-conc-execution-alarm: 2
+      datapoints-to-alarm-invocations-lambda: 1
+      datapoints-to-alarm-errors-lambda: 1
+      datapoints-to-alarm-throttles-lambda: 1
+      datapoints-to-alarm-duration-lambda: 1
+      datapoints-to-alarm-conc-execution-lambda: 1
+      evaluation-period-invocations-lambda: 1
+      evaluation-period-errors-lambda: 1
+      evaluation-period-throttles-lambda: 1
+      evaluation-period-duration-lambda: 1
+      evaluation-period-conc-execution-lambda: 1
+      alarm-period-in-seconds-invocations-lambda: 60
+      alarm-period-in-seconds-errors-lambda: 60
+      alarm-period-in-seconds-throttles-lambda: 60
+      alarm-period-in-seconds-duration-lambda: 60
+      alarm-period-in-seconds-conc-execution-lambda: 60
+
+provider:
+  name: aws
+  stackName: celosia-sls-stack
+  deploymentBucket:
+    name: subhamay-serverless-deploy-us-east-1
+    serverSideEncryption: AES256
+  runtime: python3.9
+  stage: devl
+  region: us-east-1
+  environment:
+    DYNAMODB_TABLE_NAME: ${self:custom.dynamodb-table}
+
+  iam:
+    role:
+      statements:
+        - Sid: AllowDynamoDBPutAndGetItem
+          Effect: 'Allow'
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          Resource: !GetAtt CelosiaQuotesDynamoDbTable.Arn 
+        - Sid: AllowSNSPublishMessage
+          Effect: Allow
+          Action: 
+          - sns:Publish
+          Resource: !Ref CelosiaSNSTopic
+        - Sid: AllowKMSDecrypt
+          Effect: Allow
+          Action: 
+          - kms:Decrypt
+          - kms:Encrypt
+          - kms:GenerateDataKey
+          - kms:GenerateDataKeyPair
+          Resource: ${param:kms-key-id}
+        - Sid: AllowSQSReadWriteDelete
+          Effect: Allow
+          Action: 
+          - sqs:ReceiveMessage
+          - sqs:SendMessage
+          - sqs:DeleteMessage
+          Resource: !GetAtt CelosiaSQSQueue.Arn
+      name: ${self:custom.lambda-iam-role}
+      tags:
+        ProjectName: ${self:service}
+        Environment: ${self:provider.stage}
+
+custom:
+  dynamodb-table: ${self:service}-table-${self:provider.stage}-${self:provider.region}
+  lambda-function: ${self:service}-insert-data-${self:provider.stage}-${self:provider.region}
+  lambda-iam-role: ${self:service}-lambda-execution-role
+  sf-iam-role: ${self:service}-sf-execution-role
+  sqs-queue: ${self:service}-queue-${self:provider.stage}-${self:provider.region}
+  sns-topic: ${self:service}-sns-topic-${self:provider.stage}-${self:provider.region}
+  step-function: ${self:service}-step-function-${self:provider.stage}-${self:provider.region}
+
+
+
+plugins:
+  - serverless-step-functions
+resources:
+  Resources:
+    CelosiaQuotesDynamoDbTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: MessageId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: MessageId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST 
+        SSESpecification:
+              KMSMasterKeyId: ${param:kms-key-alias}
+              SSEEnabled: True
+              SSEType: KMS
+        TableName: ${self:custom.dynamodb-table}
+    CelosiaSNSTopic:
+      Type: AWS::SNS::Topic
+      Properties: 
+        DisplayName: "SNS Topic Name For CloudWatchAlert Notification"
+        TopicName: ${self:custom.sns-topic}
+        KmsMasterKeyId: ${param:kms-key-alias}
+        Tags: 
+          - Key: Project
+            Value: ${self:service}
+          - Key: Environment
+            Value: ${self:provider.stage}
+    CelosiaSNSSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Protocol: email
+        Endpoint: ${param:sns-subscription-email}
+        TopicArn: !Ref CelosiaSNSTopic
+    CelosiaSQSQueue:
+      DeletionPolicy: Delete
+      UpdateReplacePolicy: Delete
+      Type: AWS::SQS::Queue
+      Properties: 
+        DelaySeconds: ${param:delay-seconds}
+        KmsMasterKeyId: ${param:kms-key-alias}  
+        MaximumMessageSize: ${param:maximum-message-size}
+        MessageRetentionPeriod: ${param:message-retention-period}
+        QueueName: ${self:custom.sqs-queue}
+        ReceiveMessageWaitTimeSeconds: ${param:receive-message-waittime-seconds}
+        VisibilityTimeout: ${param:message-visibility-timeout}
+        Tags: 
+          - Key: Project
+            Value: ${self:service}
+          - Key: Environment
+            Value: ${self:provider.stage}
+    CelosiaSQSPolicy: 
+      Type: AWS::SQS::QueuePolicy
+      Properties: 
+        Queues: 
+        - !Ref CelosiaSQSQueue
+        PolicyDocument: 
+          Version: "2012-10-17"
+          Id: AllowIncomingAccess
+          Statement:
+            - Sid: __owner_statement
+              Effect: Allow
+              Principal:
+                AWS:
+                  - !Ref AWS::AccountId
+              Action:
+                - 'SQS:*'
+              Resource:
+                - !GetAtt CelosiaSQSQueue.Arn
+    ###################################### 1. Lambda Invocations CW Alarm ############################ 
+    CloudWatchAlarmInvocations:
+      Type: 'AWS::CloudWatch::Alarm'
+      Properties:
+        ActionsEnabled: true
+        AlarmName: ${param:lambda-invocations-alarm-name}
+        AlarmDescription: "${self:service} Alarm for number of Lambda function invocations" 
+        AlarmActions:
+          - !Ref CelosiaSNSTopic
+        ComparisonOperator: ${param:comparison-operator-invocations-alarm}
+        MetricName: "Invocations"
+        Namespace: AWS/Lambda
+        Statistic: "Sum"
+        Threshold: ${param:threshold-lambda-invocations-alarm}
+        DatapointsToAlarm: ${param:datapoints-to-alarm-invocations-lambda}
+        EvaluationPeriods: ${param:evaluation-period-invocations-lambda}   
+        Dimensions:
+          - Name: "FunctionName"
+            Value: ${self:custom.lambda-function}
+        Period: ${param:alarm-period-in-seconds-invocations-lambda}
+        TreatMissingData: notBreaching
+    ###################################### 2. Lambda Error CW Alarm ##################################
+    CloudWatchAlarmErrors:
+      Type: 'AWS::CloudWatch::Alarm'
+      Properties:
+        ActionsEnabled: true
+        AlarmName: ${param:lambda-errors-alarm-name}
+        AlarmDescription: !Sub '${self:service} - Alarm for number Lambda function errors'
+        AlarmActions:
+          - !Ref CelosiaSNSTopic
+        ComparisonOperator: ${param:comparison-operator-errors-alarm}
+        MetricName: "Errors"
+        Namespace: AWS/Lambda
+        Statistic: "Sum"
+        Threshold: ${param:threshold-lambda-errors-alarm}
+        DatapointsToAlarm: ${param:datapoints-to-alarm-errors-lambda}
+        EvaluationPeriods: ${param:evaluation-period-errors-lambda}
+        Dimensions:
+          - Name: "FunctionName"
+            Value: ${self:custom.lambda-function}
+        Period: ${param:alarm-period-in-seconds-errors-lambda}
+        TreatMissingData: notBreaching
+    ###################################### 3. Lambda Throttles CW Alarm ##############################
+    CloudWatchAlarmThrottles:
+      Type: 'AWS::CloudWatch::Alarm'
+      Properties:
+        ActionsEnabled: true
+        AlarmName: ${param:lambda-throttles-alarm-name}
+        AlarmDescription: !Sub '${self:service} - Alarm for Lambda function throttles'
+        AlarmActions: 
+          - !Ref CelosiaSNSTopic
+        ComparisonOperator: ${param:comparison-operator-throttles-alarm}
+        MetricName: "Throttles"
+        Namespace: AWS/Lambda
+        Statistic: "Sum"
+        Threshold: ${param:threshold-lambda-throttles-alarm}
+        DatapointsToAlarm: ${param:datapoints-to-alarm-throttles-lambda}
+        EvaluationPeriods: ${param:evaluation-period-throttles-lambda}
+        Dimensions:
+          - Name: "FunctionName"
+            Value: ${self:custom.lambda-function}
+        Period: ${param:alarm-period-in-seconds-throttles-lambda}
+        TreatMissingData: notBreaching
+    ###################################### 4. Lambda Duration CW Alarm ###############################
+    CloudWatchAlarmDuration:
+      Type: 'AWS::CloudWatch::Alarm'
+      Properties:
+        ActionsEnabled: true
+        AlarmName: ${param:lambda-duration-alarm-name}
+        AlarmDescription: !Sub '${self:service} - Alarm for Lambda function duration'
+        AlarmActions:
+          - !Ref CelosiaSNSTopic
+        ComparisonOperator: ${param:comparison-operator-duration-alarm}
+        MetricName: "Duration"
+        Namespace: AWS/Lambda
+        Statistic: "Average"
+        Threshold: ${param:threshold-lambda-duration-alarm}
+        DatapointsToAlarm: ${param:datapoints-to-alarm-duration-lambda}
+        EvaluationPeriods: ${param:evaluation-period-duration-lambda}
+        Dimensions:
+          - Name: "FunctionName"
+            Value: ${self:custom.lambda-function}
+        Period: ${param:alarm-period-in-seconds-duration-lambda}
+        TreatMissingData: notBreaching
+    ###################################### 5. Lambda Concurrent Executions CW Alarm ##################
+    CloudWatchAlarmConcurrentExecutions:
+      Type: 'AWS::CloudWatch::Alarm'
+      Properties:
+        ActionsEnabled: true
+        AlarmName: ${param:lambda-conc-execution-alarm-name}
+        AlarmDescription: !Sub '${self:service} - Alarm for Lambda concurrent executions'
+        AlarmActions:
+          - !Ref CelosiaSNSTopic
+        ComparisonOperator: ${param:comparison-operator-conc-execution-alarm}
+        MetricName: "ConcurrentExecutions"
+        Namespace: AWS/Lambda
+        Statistic: "Sum"
+        Threshold: ${param:threshold-lambda-conc-execution-alarm}
+        DatapointsToAlarm: ${param:datapoints-to-alarm-conc-execution-lambda}
+        EvaluationPeriods: ${param:evaluation-period-conc-execution-lambda}
+        Dimensions:
+          - Name: "FunctionName"
+            Value: ${self:custom.lambda-function}
+        Period: ${param:alarm-period-in-seconds-conc-execution-lambda}
+        TreatMissingData: notBreaching
+    ################################ State Machine Execution Role #################################
+    StepFunctionExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:custom.sf-iam-role}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - states.amazonaws.com
+            Action:
+            - sts:AssumeRole
+        ManagedPolicyArns: 
+          - "arn:aws:iam::aws:policy/service-role/AWSLambdaRole"
+        Policies:
+          - PolicyName: step-function-policy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+              - Sid: AllowKMSEncryptDecrypt
+                Effect: Allow
+                Action: 
+                - kms:Decrypt
+                - kms:Encrypt
+                - kms:GenerateDataKey
+                - kms:GenerateDataKeyPair
+                Resource: "*"
+              - Sid: AllowKSQSSendMessage
+                Effect: Allow
+                Action: 
+                - sqs:SendMessage
+                - sqs:PurgeQueue
+                Resource: !GetAtt CelosiaSQSQueue.Arn
+              - Sid: AllowDynamoGetItem
+                Effect: Allow
+                Action: 
+                - dynamodb:GetItem
+                Resource: !GetAtt CelosiaQuotesDynamoDbTable.Arn
+        Tags:
+          - Key: Project
+            Value: ${self:service}
+          - Key: Environment
+            Value: ${self:provider.stage}
+  Outputs:
+    CelosiaLambdaFunctionArn:
+      Description: Arn of the Lambda function
+      Value: !Sub 'arn:aws:lambda:${self:provider.region}:${AWS::AccountId}:function:${self:custom.lambda-function}'
+    CelosiaQuotesDynamoDbTableArn:
+      Description: Arn of the Celosia DynamoDB Table
+      Value: !GetAtt CelosiaQuotesDynamoDbTable.Arn
+    CelosiaSQSQueueArn:
+      Description: Arn of the Celosia SQS Queue
+      Value: !GetAtt CelosiaSQSQueue.Arn
+    CelosiaSQSQueueURL:
+      Description: URL of the Celosia SQS Queue
+      Value: !GetAtt CelosiaSQSQueue.QueueUrl
+    CelosiaSNSTopicArn:
+      Description: Arn of the Celosia SNS Topic
+      Value: !Ref CelosiaSNSTopic
+    CelosiaSNSSubscriptionArn:
+      Description: Arn of the Celosia SNS Subscription
+      Value: !Ref CelosiaSNSSubscription
+    CelosiaLambdaInvocationsAlarmArn:
+      Description: Arn of the Lambda Invocations Alarm
+      Value: !GetAtt CloudWatchAlarmInvocations.Arn
+    CelosiaLambdaErrorsAlarmArn:
+      Description: Arn of the Lambda Errors Alarm
+      Value: !GetAtt CloudWatchAlarmErrors.Arn
+    CloudWatchAlarmThrottlesArn:
+      Description: Arn of the Lambda Throttles Alarm
+      Value: !GetAtt CloudWatchAlarmThrottles.Arn
+    CloudWatchAlarmDurationArn:
+      Description: Arn of the Lambda Duration Alarm
+      Value: !GetAtt CloudWatchAlarmDuration.Arn
+    CloudWatchAlarmConcurrentExecutionsArn:
+      Description: Arn of the Lambda Concurrent Executions Alarm
+      Value: !GetAtt CloudWatchAlarmConcurrentExecutions.Arn
+    CelosiaStepFunctionRoleArn:
+      Description: Arn of the Celosia Step Function Exceution Role
+      Value: !GetAtt StepFunctionExecutionRole.Arn
+
+functions:
+  insert-data-lambda:
+    handler: celosia_code.lambda_handler
+    name: ${self:custom.lambda-function}
+    description: "Celosia Lambda To Generate Some Random Data"
+    architecture: x86_64
+    # Reserve a maximum number of concurrent instances (default: account limit)
+    reservedConcurrency: 2
+    tags: # Function specific tags
+      ProjectName: ${self:service}
+      Environment: ${self:provider.stage}
+
+stepFunctions:
+  stateMachines:
+    celosiaStateMachine:
+      name: ${self:custom.lambda-function}
+      role: !GetAtt StepFunctionExecutionRole.Arn
+      definition:
+        Comment: An example of the Amazon States Language using a choice state.
+        StartAt: Seed the DynamoDB Table
+        States:
+          Seed the DynamoDB Table:
+            Comment: Read the famous quotes from the input event and load them into a DynamoDB table.
+            Type: Task
+            Resource:  !Sub "arn:aws:lambda:${self:provider.region}:${AWS::AccountId}:function:${self:custom.lambda-function}:$LATEST"
+            ResultPath: "$.List"
+            Next: For Loop Condition
+          For Loop Condition:
+            Type: Choice
+            Comment: Check if the element is not equal to DONE
+            Choices:
+              - Not:
+                  Variable: $.List[0]
+                  StringEquals: "DONE"
+                Next: Read Next Message from DynamoDB
+            Default: Succeed
+          Read Next Message from DynamoDB:
+            Type: Task
+            Comment: Read the item from DynamoDB table
+            Resource: arn:aws:states:::dynamodb:getItem
+            Parameters:
+                TableName: ${self:custom.dynamodb-table}
+                Key:
+                  MessageId:
+                    S.$: "$.List[0]"
+            ResultPath: "$.DynamoDB"
+            Next: Send Message to SQS
+          Send Message to SQS:
+            Type: Task
+            Comment: Send the message to the SQS Queue
+            Resource: "arn:aws:states:::sqs:sendMessage"
+            Parameters:
+              MessageBody.$: "$.DynamoDB.Item.Message.S"
+              QueueUrl: !GetAtt CelosiaSQSQueue.QueueUrl
+            ResultPath: "$.SQS"
+            Next: Pop Element from List
+          Pop Element from List:
+            Type: Pass
+            Comment: Pop the first element from the list
+            Parameters:
+              List.$: "$.List[1:]"
+            Next: For Loop Condition
+          Succeed:
+            Type: Succeed
+      dependsOn: StepFunctionExecutionRole
+      tags:
+        ProjectName: ${self:service}
+        Environment: ${self:provider.stage}
